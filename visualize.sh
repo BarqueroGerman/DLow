@@ -1,0 +1,1 @@
+python motion_pred/eval.py --cfg h36m_nsamp10 --mode vis

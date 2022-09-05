@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, writers
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
-
+import random
 
 def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=0.0, output=None, size=6, ncol=5, bitrate=3000):
     """
@@ -25,6 +25,7 @@ def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=
     """
 
     all_poses = next(poses_generator)
+    print(all_poses["vae_9"].shape)
     algo = algos[0] if len(algos) > 0 else next(iter(all_poses.keys()))
     t_total = next(iter(all_poses.values())).shape[0]
     poses = dict(filter(lambda x: x[0] in {'gt', 'context'} or algo == x[0].split('_')[0], all_poses.items()))
@@ -41,7 +42,7 @@ def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=
         ax.set_xlim3d([-radius/2, radius/2])
         ax.set_zlim3d([0, radius])
         ax.set_ylim3d([-radius/2, radius/2])
-        ax.set_aspect('equal')
+        ax.set_aspect('auto')
         ax.set_xticklabels([])
         ax.set_yticklabels([])
         ax.set_zticklabels([])
@@ -161,15 +162,16 @@ def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=
     def save():
         nonlocal anim
 
-        fps = 30
+        fps = 50
         anim = FuncAnimation(fig, update_video, frames=np.arange(0, poses[0].shape[0]), interval=1000 / fps, repeat=False)
+        output_numb = output.replace(".mp4", f"{random.randint(0, 10000):04d}.mp4")
         os.makedirs(os.path.dirname(output), exist_ok=True)
         if output.endswith('.mp4'):
             Writer = writers['ffmpeg']
             writer = Writer(fps=fps, metadata={}, bitrate=bitrate)
-            anim.save(output, writer=writer)
+            anim.save(output_numb, writer=writer)
         elif output.endswith('.gif'):
-            anim.save(output, dpi=80, writer='imagemagick')
+            anim.save(output_numb, dpi=80, writer='imagemagick')
         else:
             raise ValueError('Unsupported output format (only .mp4 and .gif are supported)')
         print(f'video saved to {output}!')

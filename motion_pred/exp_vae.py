@@ -34,6 +34,8 @@ def train(epoch):
         traj = tensor(traj_np, device=device, dtype=dtype).permute(1, 0, 2).contiguous()
         X = traj[:t_his]
         Y = traj[t_his:]
+        print("X shape before sample_prior", X.shape)
+        print("Y shape before sample_prior", Y.shape)
         Y_r, mu, logvar = model(X, Y)
         loss, losses = loss_function(X, Y_r, Y, mu, logvar)
         optimizer.zero_grad()

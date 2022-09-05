@@ -14,6 +14,8 @@ from motion_pred.utils.dataset_humaneva import DatasetHumanEva
 from motion_pred.utils.visualization import render_animation
 from models.motion_pred import *
 from scipy.spatial.distance import pdist, squareform
+import random
+import pandas as pd
 
 
 def denomarlize(*data):
@@ -24,22 +26,42 @@ def denomarlize(*data):
     return out
 
 
-def get_prediction(data, algo, sample_num, num_seeds=1, concat_hist=True):
+def get_prediction(data, algo, sample_num, num_seeds=1, concat_hist=True, loops=1):
     traj_np = data[..., 1:, :].reshape(data.shape[0], data.shape[1], -1)
     traj = tensor(traj_np, device=device, dtype=dtype).permute(1, 0, 2).contiguous()
-    X = traj[:t_his]
+    X_orig = traj[:t_his]
 
+    Ys = []
     if algo == 'dlow':
-        X = X.repeat((1, num_seeds, 1))
-        Z_g = models[algo].sample(X)
-        X = X.repeat_interleave(nk, dim=1)
+        X_orig = X_orig.repeat((1, num_seeds, 1))
+
+        Z_g = models[algo].sample(X_orig)
+        X_orig = X_orig.repeat_interleave(sample_num, dim=1)
+        X = X_orig # start with the original context, but replace it in a new variable
         Y = models['vae'].decode(X, Z_g)
+        Ys.append(Y)
+
+        for loop in range(1, loops):
+            X = Y[-t_his:]
+            for i in range(X.shape[1]):
+                Z_g[i] = models[algo].sample(X[:, i].unsqueeze(1))[random.randint(0, sample_num-1)]
+            Y = models['vae'].decode(X, Z_g)
+            Ys.append(Y)
     elif algo == 'vae':
-        X = X.repeat((1, sample_num * num_seeds, 1))
-        Y = models[algo].sample_prior(X)
+        X_orig = X_orig.repeat((1, sample_num * num_seeds, 1))
+        #print("X shape before sample_prior", X.shape)
+        Y = models[algo].sample_prior(X_orig)
+        Ys.append(Y)
+
+        for loop in range(1, loops):
+            X = Y[-t_his:]
+            Y = models[algo].sample_prior(X)
+            Ys.append(Y)
+
+    Y = torch.cat(Ys, dim=0)
 
     if concat_hist:
-        Y = torch.cat((X, Y), dim=0)
+        Y = torch.cat((X_orig, Y), dim=0)
     Y = Y.permute(1, 0, 2).contiguous().cpu().numpy()
     if Y.shape[0] > 1:
         Y = Y.reshape(-1, sample_num, Y.shape[-2], Y.shape[-1])
@@ -48,13 +70,16 @@ def get_prediction(data, algo, sample_num, num_seeds=1, concat_hist=True):
     return Y
 
 
-def visualize():
+def visualize(loops=1):
 
     def post_process(pred, data):
         pred = pred.reshape(pred.shape[0], pred.shape[1], -1, 3)
         if cfg.normalize_data:
             pred = denomarlize(pred)
-        pred = np.concatenate((np.tile(data[..., :1, :], (pred.shape[0], 1, 1, 1)), pred), axis=2)
+        
+        cutrada = np.zeros((pred.shape[0], pred.shape[1], 1, pred.shape[3]))
+        #pred = np.concatenate((np.tile(data[..., :1, :], (pred.shape[0], 1, 1, 1)), pred), axis=2)
+        pred = np.concatenate((cutrada, pred), axis=2)
         pred[..., :1, :] = 0
         return pred
 
@@ -66,18 +91,20 @@ def visualize():
             # gt
             gt = data[0].copy()
             gt[:, :1, :] = 0
-            poses = {'context': gt, 'gt': gt}
+            poses = {}#'context': gt, 'gt': gt}
             # vae
             for algo in vis_algos:
-                pred = get_prediction(data, algo, nk)[0]
+                pred = get_prediction(data, algo, nk, loops=loops)[0]
                 pred = post_process(pred, data)
                 for i in range(pred.shape[0]):
                     poses[f'{algo}_{i}'] = pred[i]
 
+            #for key in poses:
+            #    print(f"{key} - {poses[key].shape}")
             yield poses
 
     pose_gen = pose_generator()
-    render_animation(dataset.skeleton, pose_gen, vis_algos, cfg.t_his, ncol=12, output='out/video.mp4')
+    render_animation(dataset.skeleton, pose_gen, vis_algos, cfg.t_his, ncol=12, output=f'out/video.mp4')
 
 
 def get_gt(data):
@@ -134,21 +161,31 @@ def compute_stats():
     data_gen = dataset.iter_generator(step=cfg.t_his)
     num_samples = 0
     num_seeds = args.num_seeds
+    results = {y: [] for y in algos}
     for i, data in enumerate(data_gen):
         num_samples += 1
         gt = get_gt(data)
         gt_multi = traj_gt_arr[i]
         for algo in algos:
             pred = get_prediction(data, algo, sample_num=cfg.nk, num_seeds=num_seeds, concat_hist=False)
+            values = []
             for stats in stats_names:
                 val = 0
                 for pred_i in pred:
                     val += stats_func[stats](pred_i, gt, gt_multi) / num_seeds
                 stats_meter[stats][algo].update(val)
+                values.append(val)
+
+            results[algo].append(values)
         print('-' * 80)
         for stats in stats_names:
             str_stats = f'{num_samples:04d} {stats}: ' + ' '.join([f'{x}: {y.val:.4f}({y.avg:.4f})' for x, y in stats_meter[stats].items()])
             print(str_stats)
+
+    for algo in algos:
+        # store results to pandas csv file
+        results[algo] = pd.DataFrame(results[algo], columns=stats_names)
+        results[algo].to_csv(f'{cfg.result_dir}/{algo}.csv')
 
     logger.info('=' * 80)
     for stats in stats_names:
@@ -250,6 +287,6 @@ if __name__ == '__main__':
         dataset.normalize_data(model_cp['meta']['mean'], model_cp['meta']['std'])
 
     if args.mode == 'vis':
-        visualize()
+        visualize(loops=1)
     elif args.mode == 'stats':
         compute_stats()
